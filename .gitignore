@@ -2,3 +2,4 @@ omen.config.json
 .omen-state.json
 __pycache__/
 *.pyc
+.env
