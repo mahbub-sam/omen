@@ -3,14 +3,17 @@
 omen - OMEN: local-first multi-agent job orchestration
 
 Usage:
-    omen init                          Create a starter omen.config.json in this folder
-    omen run "<task>" --role coder     Run a single job with one role
-    omen chain "<task>" --roles coder,reviewer
-                                      Run a sequential chain: each role's output
-                                      feeds into the next role as context
-    omen jobs                          List all jobs (running/waiting/done/failed)
-    omen show <job-id>                 Show full output of a job
-    omen stop <job-id>                 Mark a running job as stopped (best-effort)
+    omen init                              Create a starter omen.config.json in this folder
+    omen project create <name>             Register a new project to group jobs under
+    omen project list                      List all projects with job counts
+    omen run "<task>" --role coder [--project <name>]
+                                            Run a single job with one role
+    omen chain "<task>" --roles coder,reviewer [--project <name>]
+                                            Run a sequential chain: each role's output
+                                            feeds into the next role as context
+    omen jobs [--project <name>]           List all jobs (running/waiting/done/failed)
+    omen show <job-id>                     Show full output of a job
+    omen stop <job-id>                     Mark a running job as stopped (best-effort)
 
 State is stored locally in .omen-state.json - no database, no cloud.
 """
@@ -40,6 +43,12 @@ DEFAULT_CONFIG = {
         },
         "reviewer": {
             "system_prompt": "You are a strict but fair code reviewer. Given code, identify bugs, security issues, unclear logic, and missing edge cases. Be specific: reference exact lines or functions. If the code is genuinely fine, say so briefly rather than inventing issues."
+        },
+        "researcher": {
+            "system_prompt": "You are a research assistant. Given a task, gather relevant facts, options, or prior art needed to complete it well. Present findings as a short, organized summary with the most decision-relevant points first. Flag anything uncertain rather than guessing."
+        },
+        "tester": {
+            "system_prompt": "You are a QA engineer. Given code, write test cases covering normal use, edge cases, and failure modes. Prefer concrete test code over descriptions when a testing framework is implied or specified; otherwise, list clear test scenarios."
         }
     }
 }
@@ -78,11 +87,14 @@ def cmd_init():
 
 def load_state():
     if not Path(STATE_FILE).exists():
-        return {"jobs": {}}
+        return {"jobs": {}, "projects": {}}
     try:
-        return json.loads(Path(STATE_FILE).read_text())
+        state = json.loads(Path(STATE_FILE).read_text())
+        state.setdefault("jobs", {})
+        state.setdefault("projects", {})
+        return state
     except (json.JSONDecodeError, OSError):
-        return {"jobs": {}}
+        return {"jobs": {}, "projects": {}}
 
 
 def save_state(state):
@@ -98,19 +110,54 @@ def update_job(job_id, **fields):
     save_state(state)
 
 
-def new_job(role, task):
+def new_job(role, task, project=None):
     job_id = str(uuid.uuid4())[:8]
     update_job(
         job_id,
         id=job_id,
         role=role,
         task=task,
+        project=project,
         status="waiting",
         created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         output=None,
         error=None,
     )
     return job_id
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+def cmd_project_create(name):
+    state = load_state()
+    if name in state["projects"]:
+        print(f"⚠️  Project '{name}' already exists.")
+        return
+    state["projects"][name] = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    save_state(state)
+    print(f"✅ Project '{name}' created.")
+
+
+def cmd_project_list():
+    state = load_state()
+    projects = state.get("projects", {})
+    if not projects:
+        print("No projects yet. Create one with: omen project create <name>")
+        return
+
+    jobs = state.get("jobs", {})
+    print(f"{'PROJECT':<20} {'CREATED':<20} JOBS (running/waiting/done/failed)")
+    print("-" * 80)
+    for name, info in sorted(projects.items()):
+        project_jobs = [j for j in jobs.values() if j.get("project") == name]
+        counts = {"running": 0, "waiting": 0, "done": 0, "failed": 0, "stopped": 0}
+        for j in project_jobs:
+            s = j.get("status", "waiting")
+            counts[s] = counts.get(s, 0) + 1
+        summary = f"{counts['running']}/{counts['waiting']}/{counts['done']}/{counts['failed']}"
+        print(f"{name:<20} {info.get('created_at', '?'):<20} {summary}")
 
 
 # ---------------------------------------------------------------------------
@@ -178,28 +225,34 @@ def execute_job(job_id, config, extra_context=""):
         return None
 
 
-def cmd_run(task, role):
+def cmd_run(task, role, project=None):
     config = load_config()
     if role not in config.get("roles", {}):
         print(f"❌ Unknown role '{role}'. Available: {list(config.get('roles', {}).keys())}")
         sys.exit(1)
-    job_id = new_job(role, task)
+    if project and project not in load_state().get("projects", {}):
+        print(f"❌ Unknown project '{project}'. Create it with: omen project create {project}")
+        sys.exit(1)
+    job_id = new_job(role, task, project=project)
     output = execute_job(job_id, config)
     if output:
         print(f"\n--- Output ({job_id}) ---\n{output}")
 
 
-def cmd_chain(task, role_names):
+def cmd_chain(task, role_names, project=None):
     config = load_config()
     available = config.get("roles", {})
     for r in role_names:
         if r not in available:
             print(f"❌ Unknown role '{r}'. Available: {list(available.keys())}")
             sys.exit(1)
+    if project and project not in load_state().get("projects", {}):
+        print(f"❌ Unknown project '{project}'. Create it with: omen project create {project}")
+        sys.exit(1)
 
     context = ""
     for role in role_names:
-        job_id = new_job(role, task)
+        job_id = new_job(role, task, project=project)
         output = execute_job(job_id, config, extra_context=context)
         if output is None:
             print(f"⛔ Chain stopped: '{role}' failed.")
@@ -212,23 +265,26 @@ def cmd_chain(task, role_names):
 # Inspection commands
 # ---------------------------------------------------------------------------
 
-def cmd_jobs():
+def cmd_jobs(project=None):
     state = load_state()
     jobs = state.get("jobs", {})
+    if project:
+        jobs = {k: v for k, v in jobs.items() if v.get("project") == project}
     if not jobs:
-        print("No jobs yet.")
+        print(f"No jobs found" + (f" for project '{project}'." if project else "."))
         return
 
     status_icon = {
         "waiting": "⏳", "running": "🏃", "done": "✅", "failed": "❌", "stopped": "🛑"
     }
 
-    print(f"{'ID':<10} {'ROLE':<12} {'STATUS':<12} {'CREATED':<20} TASK")
-    print("-" * 90)
+    print(f"{'ID':<10} {'PROJECT':<12} {'ROLE':<12} {'STATUS':<12} {'CREATED':<20} TASK")
+    print("-" * 100)
     for job_id, job in sorted(jobs.items(), key=lambda kv: kv[1].get("created_at", "")):
         icon = status_icon.get(job.get("status"), "?")
-        task_preview = (job.get("task", "") or "")[:40]
-        print(f"{job_id:<10} {job.get('role', '?'):<12} {icon} {job.get('status', '?'):<9} "
+        task_preview = (job.get("task", "") or "")[:35]
+        proj = job.get("project") or "-"
+        print(f"{job_id:<10} {proj:<12} {job.get('role', '?'):<12} {icon} {job.get('status', '?'):<9} "
               f"{job.get('created_at', '?'):<20} {task_preview}")
 
 
@@ -270,36 +326,64 @@ def main():
     if command == "init":
         cmd_init()
 
+    elif command == "project":
+        if len(sys.argv) < 3:
+            print("❌ Usage: omen project create <name>  |  omen project list")
+            sys.exit(1)
+        sub = sys.argv[2]
+        if sub == "create":
+            if len(sys.argv) < 4:
+                print("❌ Usage: omen project create <name>")
+                sys.exit(1)
+            cmd_project_create(sys.argv[3])
+        elif sub == "list":
+            cmd_project_list()
+        else:
+            print(f"❌ Unknown project subcommand: {sub}")
+            sys.exit(1)
+
     elif command == "run":
         if len(sys.argv) < 3:
-            print("❌ Usage: omen run \"<task>\" --role <role>")
+            print("❌ Usage: omen run \"<task>\" --role <role> [--project <name>]")
             sys.exit(1)
         task = sys.argv[2]
         role = None
+        project = None
         if "--role" in sys.argv:
             idx = sys.argv.index("--role")
             role = sys.argv[idx + 1]
+        if "--project" in sys.argv:
+            idx = sys.argv.index("--project")
+            project = sys.argv[idx + 1]
         if not role:
             print("❌ Missing --role <role>")
             sys.exit(1)
-        cmd_run(task, role)
+        cmd_run(task, role, project=project)
 
     elif command == "chain":
         if len(sys.argv) < 3:
-            print("❌ Usage: omen chain \"<task>\" --roles coder,reviewer")
+            print("❌ Usage: omen chain \"<task>\" --roles coder,reviewer [--project <name>]")
             sys.exit(1)
         task = sys.argv[2]
         roles = None
+        project = None
         if "--roles" in sys.argv:
             idx = sys.argv.index("--roles")
             roles = sys.argv[idx + 1].split(",")
+        if "--project" in sys.argv:
+            idx = sys.argv.index("--project")
+            project = sys.argv[idx + 1]
         if not roles:
             print("❌ Missing --roles role1,role2")
             sys.exit(1)
-        cmd_chain(task, roles)
+        cmd_chain(task, roles, project=project)
 
     elif command == "jobs":
-        cmd_jobs()
+        project = None
+        if "--project" in sys.argv:
+            idx = sys.argv.index("--project")
+            project = sys.argv[idx + 1]
+        cmd_jobs(project=project)
 
     elif command == "show":
         if len(sys.argv) < 3:
