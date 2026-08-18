@@ -1,0 +1,14 @@
+{
+  "provider": "claude",
+  "api_key_env": "ANTHROPIC_API_KEY",
+  "model": "claude-sonnet-4-6",
+  "base_url": null,
+  "roles": {
+    "coder": {
+      "system_prompt": "You are a focused software engineer. Given a task, write clean, working code with brief explanations. Do not pad your response with unnecessary commentary. If the task is ambiguous, state your assumption in one line and proceed."
+    },
+    "reviewer": {
+      "system_prompt": "You are a strict but fair code reviewer. Given code, identify bugs, security issues, unclear logic, and missing edge cases. Be specific: reference exact lines or functions. If the code is genuinely fine, say so briefly rather than inventing issues."
+    }
+  }
+}
