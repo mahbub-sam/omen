@@ -1,16 +1,17 @@
-# OMEN (mc)
+# OMEN
 
-A local-first CLI for orchestrating AI agent jobs — no database, no cloud, no dashboard server. Everything lives in a plain JSON state file in your project folder.
+A local-first CLI for orchestrating multi-agent AI job pipelines — no database, no cloud, no dashboard server. Everything lives in a plain JSON state file in your project folder.
 
 ```
-mc run "add input validation" --role coder
-mc chain "build a login form" --roles coder,reviewer
-mc jobs
+omen project create website
+omen run "add input validation" --role coder --project website
+omen chain "build a login form" --roles coder,reviewer --project website
+omen jobs --project website
 ```
 
 ## Why
 
-Running one AI agent on a task is easy. Running a *pipeline* — one agent writes code, another reviews it, output flows from one to the next — usually means gluing scripts together by hand. OMEN gives you that pipeline as two commands, with every job's status and output tracked locally so you can inspect what happened later.
+Running one AI agent on a task is easy. Running a *pipeline* — one agent writes code, another reviews it, output flows from one to the next — usually means gluing scripts together by hand. OMEN gives you that pipeline as a couple of commands, with every job's status and output tracked locally so you can inspect what happened later. As you work on multiple things at once, `project` grouping keeps their jobs separate instead of one long undifferentiated list.
 
 ## Install
 
@@ -20,34 +21,40 @@ Zero dependencies — just Python 3 stdlib (`urllib`, `json`). No `pip install` 
 git clone https://github.com/yourname/omen.git
 cd omen
 chmod +x omen.py
-sudo ln -s "$(pwd)/omen.py" /usr/local/bin/mc   # optional, puts it on PATH
+sudo ln -s "$(pwd)/omen.py" /usr/local/bin/omen   # optional, puts it on PATH
 ```
 
 ## Setup
 
 ```bash
 cd your-project/
-mc init                                   # creates mc.config.json
-export ANTHROPIC_API_KEY=sk-ant-...       # or edit mc.config.json for a different provider
+omen init                                  # creates omen.config.json
+export ANTHROPIC_API_KEY=sk-ant-...        # or edit omen.config.json for a different provider
 ```
 
 ## Usage
 
 ```bash
-mc run "<task>" --role coder              # run a single job
-mc chain "<task>" --roles coder,reviewer  # run a sequential pipeline
-mc jobs                                   # list all jobs and their status
-mc show <job-id>                          # see full output of one job
-mc stop <job-id>                          # mark a job as stopped
+omen project create <name>                       # register a project to group jobs under
+omen project list                                 # list projects with job counts
+
+omen run "<task>" --role coder [--project <name>]                    # run a single job
+omen chain "<task>" --roles coder,reviewer [--project <name>]        # run a sequential pipeline
+
+omen jobs [--project <name>]              # list jobs, optionally filtered by project
+omen show <job-id>                        # see full output of one job
+omen stop <job-id>                        # mark a job as stopped
 ```
+
+`--project` is optional everywhere — you can use OMEN without ever creating a project, and jobs without one just show `-` in listings.
 
 ## How chaining works
 
-`mc chain "task" --roles coder,reviewer` runs the `coder` role first, then passes its output as context into the `reviewer` role. Each role only sees the immediately preceding output, not the full history — this keeps prompts small and roles focused.
+`omen chain "task" --roles coder,reviewer` runs the `coder` role first, then passes its output as context into the `reviewer` role. Each role only sees the immediately preceding output, not the full history — this keeps prompts small and roles focused.
 
 ## Config
 
-`mc.config.json` defines your provider, model, and the roles available to you. Roles are just a name + a system prompt — add your own:
+`omen.config.json` defines your provider, model, and the roles available to you. Roles are just a name + a system prompt — add your own:
 
 ```json
 {
@@ -58,10 +65,13 @@ mc stop <job-id>                          # mark a job as stopped
   "roles": {
     "coder": { "system_prompt": "..." },
     "reviewer": { "system_prompt": "..." },
-    "tester": { "system_prompt": "You write test cases for the given code..." }
+    "researcher": { "system_prompt": "..." },
+    "tester": { "system_prompt": "..." }
   }
 }
 ```
+
+The default config ships with four roles: `coder`, `reviewer`, `researcher`, `tester`. Edit or add to these freely.
 
 ### Supported providers
 
@@ -71,13 +81,13 @@ mc stop <job-id>                          # mark a job as stopped
 
 ## State
 
-All job history lives in `.mc-state.json` in your project folder. Delete it to reset. Add it to `.gitignore` unless you specifically want job history versioned.
+All job and project data lives in `.omen-state.json` in your project folder. Delete it to reset. Add it to `.gitignore` unless you specifically want job history versioned.
 
-## What v1 doesn't do (yet)
+## What OMEN doesn't do (yet)
 
 - Parallel job execution (jobs run one at a time, synchronously)
-- More than 2 roles wired into `chain` at once (you can still define more roles and call `mc run` on each manually)
-- True background/async job stopping — `mc stop` marks state but a synchronous run can't be interrupted mid-call yet
+- More than 2 roles wired into `chain` at once (you can still define more roles and call `omen run` on each manually, or chain them in separate steps)
+- True background/async job stopping — `omen stop` marks state but a synchronous run can't be interrupted mid-call yet
 
 These are left out deliberately to keep this version reliable. Contributions welcome.
 
